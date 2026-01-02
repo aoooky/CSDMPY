@@ -1,0 +1,48 @@
+[project]
+name = "cs-demo-manager-python"
+version = "0.1.0"
+description = "CS Demo Manager - Python implementation"
+authors = [{name = "Your Name", email = "your.email@example.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    "PyQt6>=6.7.0",
+    "demoparser2>=0.28.0",
+    "SQLAlchemy>=2.0.27",
+    "alembic>=1.13.1",
+    "aiosqlite>=0.20.0",
+    "aiofiles>=24.1.0",
+    "pandas>=2.2.0",
+    "numpy>=2.0.0",
+    "matplotlib>=3.9.0",
+    "loguru>=0.7.2",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "black>=24.0.0",
+    "ruff>=0.6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
