@@ -1,566 +1,495 @@
 """
-Виджет для 2D визуализации демо файлов
-Отображает карту и позиции игроков
+Обновлённый Demo Viewer с правильной калибровкой координат
 """
-from pathlib import Path
-from typing import Optional
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QPainter, QPixmap, QColor, QPen, QBrush, QFont
+from typing import Optional, Dict, List
+from datetime import datetime
 
-from ..core.models import Match, GameFrame, Player, Team
-from ..core.map_renderer import MapRenderer
-from ..utils.logger import log
-from ..utils.config import config
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGraphicsView, 
+    QGraphicsScene, QGraphicsPixmapItem, QPushButton,
+    QSlider, QLabel, QSpinBox
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPointF
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPixmap
+from loguru import logger
 
-
-class MapCanvas(QWidget):
-    """Canvas для отрисовки карты и игроков"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(800, 600)
-        
-        # Данные
-        self.map_image: Optional[QPixmap] = None
-        self.renderer: Optional[MapRenderer] = None
-        self.current_frame: Optional[GameFrame] = None
-        
-        # Настройки отрисовки
-        self.player_size = 6  # Уменьшено с 12 до 6
-        self.show_names = True
-        self.show_health = True
-        self.debug_mode = False  # Debug режим
-        
-        # Цвета команд
-        self.t_color = QColor(255, 150, 0)  # Оранжевый
-        self.ct_color = QColor(100, 150, 255)  # Синий
-        self.dead_color = QColor(128, 128, 128)  # Серый
-        
-        log.debug("MapCanvas initialized")
-    
-    def load_map(self, map_name: str):
-        """
-        Загрузка изображения карты
-        
-        Args:
-            map_name: Название карты
-        """
-        # Создаём рендерер
-        self.renderer = MapRenderer(
-            map_name,
-            self.width(),
-            self.height()
-        )
-        
-        # Загружаем изображение
-        map_path = self.renderer.get_map_image_path()
-        
-        if map_path and map_path.exists():
-            self.map_image = QPixmap(str(map_path))
-            log.info(f"Map image loaded: {map_name}")
-        else:
-            self.map_image = None
-            log.warning(f"Map image not found for: {map_name}")
-        
-        self.update()
-    
-    def set_frame(self, frame: GameFrame):
-        """
-        Установить текущий фрейм для отрисовки
-        
-        Args:
-            frame: GameFrame с позициями игроков
-        """
-        self.current_frame = frame
-        self.update()
-    
-    def paintEvent(self, event):
-        """Отрисовка canvas"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Фон
-        painter.fillRect(self.rect(), QColor(40, 40, 40))
-        
-        # Рисуем область карты (вместо изображения)
-        if self.renderer:
-            map_width = self.renderer.bounds.width * self.renderer.scale
-            map_height = self.renderer.bounds.height * self.renderer.scale
-            
-            # Рисуем фон карты
-            map_rect = QRectF(
-                self.renderer.offset_x,
-                self.renderer.offset_y,
-                map_width,
-                map_height
-            )
-            painter.fillRect(map_rect, QColor(60, 60, 60))
-            
-            # Если есть изображение карты, пытаемся его нарисовать
-            if self.map_image:
-                self._draw_map(painter)
-        
-        # Debug информация
-        if self.debug_mode and self.renderer:
-            painter.setPen(QPen(QColor(255, 255, 0)))
-            painter.setFont(QFont("Arial", 10))
-            debug_text = (
-                f"Canvas: {self.width()}x{self.height()} | "
-                f"Bounds: ({self.renderer.bounds.min_x:.0f}, {self.renderer.bounds.min_y:.0f}) to "
-                f"({self.renderer.bounds.max_x:.0f}, {self.renderer.bounds.max_y:.0f}) | "
-                f"Scale: {self.renderer.scale:.3f} | "
-                f"Offset: ({self.renderer.offset_x:.0f}, {self.renderer.offset_y:.0f})"
-            )
-            painter.drawText(10, 20, debug_text)
-        
-        # Игроки
-        if self.current_frame and self.renderer:
-            self._draw_players(painter)
-        
-        # Debug: рисуем границы карты
-        if self.debug_mode and self.renderer:
-            painter.setPen(QPen(QColor(255, 0, 0), 2))
-            map_width = self.renderer.bounds.width * self.renderer.scale
-            map_height = self.renderer.bounds.height * self.renderer.scale
-            painter.drawRect(
-                int(self.renderer.offset_x),
-                int(self.renderer.offset_y),
-                int(map_width),
-                int(map_height)
-            )
-    
-    def _draw_map(self, painter: QPainter):
-        """Отрисовка изображения карты"""
-        if not self.renderer:
-            return
-        
-        # Вычисляем размеры области карты (в пикселях)
-        map_width = self.renderer.bounds.width * self.renderer.scale
-        map_height = self.renderer.bounds.height * self.renderer.scale
-        
-        # Используем точные смещения из renderer
-        x = self.renderer.offset_x
-        y = self.renderer.offset_y
-        
-        # Масштабируем изображение карты ТОЧНО под область координат
-        # Изображение 1024x1024 растягиваем под bounds
-        scaled_map = self.map_image.scaled(
-            int(map_width),
-            int(map_height),
-            Qt.AspectRatioMode.IgnoreAspectRatio,  # Игнорируем соотношение сторон
-            Qt.TransformationMode.SmoothTransformation
-        )
-        
-        # Рисуем изображение точно в области координат
-        painter.drawPixmap(int(x), int(y), scaled_map)
-    
-    def _draw_placeholder(self, painter: QPainter):
-        """Отрисовка placeholder когда карта не загружена"""
-        painter.setPen(QPen(QColor(100, 100, 100)))
-        painter.setFont(QFont("Arial", 16))
-        painter.drawText(
-            self.rect(),
-            Qt.AlignmentFlag.AlignCenter,
-            "Map not loaded"
-        )
-    
-    def _draw_players(self, painter: QPainter):
-        """Отрисовка игроков"""
-        for player_frame in self.current_frame.players:
-            self._draw_player(painter, player_frame)
-    
-    def _draw_player(self, painter: QPainter, player_frame):
-        """
-        Отрисовка одного игрока
-        
-        Args:
-            painter: QPainter
-            player_frame: PlayerFrame с информацией об игроке
-        """
-        # Конвертируем координаты
-        screen_x, screen_y = self.renderer.game_to_screen(player_frame.position)
-        
-        # Определяем цвет
-        if not player_frame.is_alive:
-            color = self.dead_color
-        elif player_frame.player.team == Team.T:
-            color = self.t_color
-        elif player_frame.player.team == Team.CT:
-            color = self.ct_color
-        else:
-            color = QColor(200, 200, 200)
-        
-        # Рисуем маркер игрока
-        painter.setPen(QPen(color, 2))
-        painter.setBrush(QBrush(color if player_frame.is_alive else Qt.BrushStyle.NoBrush))
-        
-        # Круг
-        painter.drawEllipse(
-            QPointF(screen_x, screen_y),
-            self.player_size,
-            self.player_size
-        )
-        
-        # Линия направления взгляда (view angle)
-        if player_frame.is_alive:
-            import math
-            angle_rad = math.radians(player_frame.view_angle)
-            line_length = self.player_size * 2
-            
-            end_x = screen_x + math.cos(angle_rad) * line_length
-            end_y = screen_y - math.sin(angle_rad) * line_length
-            
-            painter.setPen(QPen(color, 2))
-            painter.drawLine(
-                QPointF(screen_x, screen_y),
-                QPointF(end_x, end_y)
-            )
-        
-        # Имя игрока
-        if self.show_names:
-            painter.setPen(QPen(QColor(255, 255, 255)))
-            painter.setFont(QFont("Arial", 8))
-            
-            text_rect = QRectF(
-                screen_x - 50,
-                screen_y - self.player_size - 15,
-                100,
-                15
-            )
-            
-            painter.drawText(
-                text_rect,
-                Qt.AlignmentFlag.AlignCenter,
-                player_frame.player.name
-            )
-        
-        # Здоровье
-        if self.show_health and player_frame.is_alive:
-            painter.setPen(QPen(QColor(255, 255, 255)))
-            painter.setFont(QFont("Arial", 7))
-            
-            health_rect = QRectF(
-                screen_x - 20,
-                screen_y + self.player_size + 2,
-                40,
-                12
-            )
-            
-            # Цвет здоровья
-            health_color = self._get_health_color(player_frame.health)
-            painter.setPen(QPen(health_color))
-            
-            painter.drawText(
-                health_rect,
-                Qt.AlignmentFlag.AlignCenter,
-                f"{player_frame.health}"
-            )
-    
-    def _get_health_color(self, health: int) -> QColor:
-        """Цвет в зависимости от здоровья"""
-        if health > 75:
-            return QColor(0, 255, 0)  # Зелёный
-        elif health > 50:
-            return QColor(255, 255, 0)  # Жёлтый
-        elif health > 25:
-            return QColor(255, 165, 0)  # Оранжевый
-        else:
-            return QColor(255, 0, 0)  # Красный
-    
-    def resizeEvent(self, event):
-        """Обработка изменения размера"""
-        super().resizeEvent(event)
-        if self.renderer:
-            self.renderer.resize_canvas(self.width(), self.height())
-    
-    def toggle_names(self):
-        """Переключить отображение имён"""
-        self.show_names = not self.show_names
-        self.update()
-    
-    def toggle_health(self):
-        """Переключить отображение здоровья"""
-        self.show_health = not self.show_health
-        self.update()
-    
-    def toggle_debug(self):
-        """Переключить debug режим"""
-        self.debug_mode = not self.debug_mode
-        self.update()
+from src.core.map_renderer import MapRenderer
 
 
 class DemoViewer(QWidget):
-    """
-    Главный виджет для просмотра демо
-    Включает canvas и информационную панель
-    """
+    """Виджет для просмотра демки в 2D"""
     
     # Сигналы
-    playback_state_changed = pyqtSignal(bool)  # playing: bool
+    playback_started = pyqtSignal()
+    playback_paused = pyqtSignal()
+    playback_stopped = pyqtSignal()
+    playback_state_changed = pyqtSignal(str)  # "playing", "paused", "stopped"
+    tick_changed = pyqtSignal(int)
     
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self):
+        super().__init__()
         
-        self.match: Optional[Match] = None
-        self.frames: list[GameFrame] = []
-        self.current_frame_index = 0
+        # Данные демки
+        self.positions_data = None
+        self.rounds_data = None
+        self.kills_data = None
+        self.map_name = None
+        
+        # Совместимость со старым кодом
+        self.frames = []  # Для совместимости с main_window
+        
+        # Рендерер карты
+        self.map_renderer: Optional[MapRenderer] = None
+        
+        # Воспроизведение
+        self.current_tick = 0
+        self.max_tick = 0
         self.is_playing = False
-        self.playback_speed = 1.0  # Множитель скорости
+        self.playback_speed = 1.0  # 1.0 = реальное время
         
-        # Интерполяция для плавной анимации
-        self.interpolation_progress = 0.0  # 0.0 - 1.0 между frames
-        self.interpolated_frame: Optional[GameFrame] = None
+        # Таймер для анимации (60 FPS)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.fps = 60
+        self.tick_rate = 64  # CS tick rate
         
-        # Таймер для воспроизведения
-        self.playback_timer = QTimer()
-        self.playback_timer.timeout.connect(self._advance_frame)
-        # Используем 60 FPS для плавной анимации
-        self.render_fps = 60  # FPS отрисовки
+        # Кэш для оптимизации
+        self._player_cache = {}
+        self._kill_cache = {}
         
-        # Скорость переключения frames (4 FPS = реальное время)
-        self.game_fps = 4  # Скорость переключения game frames
+        self.init_ui()
         
-        # Таймер для обновления UI
-        self.ui_update_timer = QTimer()
-        self.ui_update_timer.timeout.connect(self._update_ui)
-        self.ui_update_timer.start(100)  # Обновляем UI каждые 100мс
-        
-        self._init_ui()
-        
-        log.debug("DemoViewer initialized")
+        logger.info("DemoViewer initialized")
     
-    def _init_ui(self):
+    def init_ui(self):
         """Инициализация UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # Canvas для карты
-        self.canvas = MapCanvas()
-        layout.addWidget(self.canvas)
+        # Сцена и view для карты
+        self.scene = QGraphicsScene()
+        self.view = QGraphicsView(self.scene)
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        # Информационная панель
-        info_layout = QHBoxLayout()
+        layout.addWidget(self.view, 1)
         
-        self.round_label = QLabel("Round: -")
-        self.tick_label = QLabel("Tick: -")
-        self.time_label = QLabel("Time: -")
-        
-        info_layout.addWidget(self.round_label)
-        info_layout.addWidget(self.tick_label)
-        info_layout.addWidget(self.time_label)
-        info_layout.addStretch()
-        
-        layout.addLayout(info_layout)
+        # Панель управления
+        controls = self._create_controls()
+        layout.addWidget(controls)
     
-    def load_match(self, match: Match, frames: list[GameFrame]):
+    def _create_controls(self) -> QWidget:
+        """Создание панели управления"""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        
+        # Кнопки воспроизведения
+        self.play_btn = QPushButton("▶ Play")
+        self.play_btn.clicked.connect(self.toggle_playback)
+        layout.addWidget(self.play_btn)
+        
+        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn.clicked.connect(self.stop_playback)
+        layout.addWidget(self.stop_btn)
+        
+        # Слайдер времени
+        layout.addWidget(QLabel("Timeline:"))
+        self.time_slider = QSlider(Qt.Orientation.Horizontal)
+        self.time_slider.setMinimum(0)
+        self.time_slider.setMaximum(100)
+        self.time_slider.valueChanged.connect(self.on_slider_changed)
+        layout.addWidget(self.time_slider, 1)
+        
+        # Метка времени
+        self.time_label = QLabel("00:00 / 00:00")
+        layout.addWidget(self.time_label)
+        
+        # Скорость воспроизведения
+        layout.addWidget(QLabel("Speed:"))
+        
+        speed_05x = QPushButton("0.5x")
+        speed_05x.clicked.connect(lambda: self.set_speed(0.5))
+        layout.addWidget(speed_05x)
+        
+        speed_1x = QPushButton("1x")
+        speed_1x.clicked.connect(lambda: self.set_speed(1.0))
+        layout.addWidget(speed_1x)
+        
+        speed_2x = QPushButton("2x")
+        speed_2x.clicked.connect(lambda: self.set_speed(2.0))
+        layout.addWidget(speed_2x)
+        
+        speed_4x = QPushButton("4x")
+        speed_4x.clicked.connect(lambda: self.set_speed(4.0))
+        layout.addWidget(speed_4x)
+        
+        # Информация
+        self.info_label = QLabel("No demo loaded")
+        layout.addWidget(self.info_label)
+        
+        return widget
+    
+    def load_demo(self, demo_data: dict):
         """
-        Загрузить матч для просмотра
+        Загрузка данных демки
         
         Args:
-            match: Match объект
-            frames: Список GameFrame для воспроизведения
+            demo_data: Словарь с данными из парсера
         """
-        self.match = match
-        self.frames = frames
-        self.current_frame_index = 0
+        logger.info(f"Loading demo data: {demo_data.get('map_name', 'Unknown')}")
+        
+        # Сохраняем данные
+        self.positions_data = demo_data.get("positions")
+        self.rounds_data = demo_data.get("rounds", [])
+        self.kills_data = demo_data.get("kills", [])
+        self.map_name = demo_data.get("map_name", "de_dust2")
+        
+        # Определяем диапазон тиков
+        if self.positions_data is not None and not self.positions_data.empty:
+            self.max_tick = int(self.positions_data['tick'].max())
+            self.current_tick = int(self.positions_data['tick'].min())
+        else:
+            self.max_tick = 0
+            self.current_tick = 0
         
         # Загружаем карту
-        self.canvas.load_map(match.map_name)
+        self.load_map(self.map_name)
         
-        # Показываем первый фрейм
-        if self.frames:
-            self._show_frame(0)
+        # Обновляем UI
+        self.time_slider.setMaximum(self.max_tick)
+        self.time_slider.setValue(self.current_tick)
+        self.update_info()
         
-        log.info(
-            f"Match loaded: {match.map_name}, "
-            f"{len(frames)} frames, "
-            f"{len(match.players)} players"
-        )
+        # Рендерим первый кадр
+        self.render_frame()
+        
+        logger.info(f"Demo loaded: {self.max_tick} ticks")
     
-    def _show_frame(self, index: int):
-        """Показать фрейм по индексу"""
-        if 0 <= index < len(self.frames):
-            frame = self.frames[index]
-            self.current_frame_index = index
-            
-            # Обновляем canvas
-            self.canvas.set_frame(frame)
-            
-            # Обновляем информацию
-            self.round_label.setText(f"Round: {frame.round_number}")
-            self.tick_label.setText(f"Tick: {frame.tick}")
-            self.time_label.setText(f"Time: {frame.time_seconds:.1f}s")
+    def load_map(self, map_name: str):
+        """Загрузка карты"""
+        logger.info(f"Loading map: {map_name}")
+        
+        # Создаём рендерер
+        self.map_renderer = MapRenderer(map_name, assets_dir="assets/maps")
+        
+        # Отображаем карту
+        self.scene.clear()
+        map_pixmap = self.map_renderer.get_map_image()
+        self.scene.addPixmap(map_pixmap)
+        
+        # Подгоняем view под размер карты
+        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        
+        logger.info(f"Map loaded: {map_name}")
     
-    def play(self):
-        """Начать воспроизведение"""
-        if not self.frames:
+    def toggle_playback(self):
+        """Переключение воспроизведения"""
+        if self.is_playing:
+            self.pause_playback()
+        else:
+            self.start_playback()
+    
+    def start_playback(self):
+        """Начало воспроизведения"""
+        if self.positions_data is None:
             return
         
         self.is_playing = True
-        # 60 FPS для плавной отрисовки
-        interval = int(1000 / self.render_fps)  # ~16.6 мс
-        self.playback_timer.start(interval)
-        self.playback_state_changed.emit(True)
-        log.debug(f"Playback started (speed: {self.playback_speed}x, {self.render_fps} FPS)")
+        self.play_btn.setText("⏸ Pause")
+        
+        # Запускаем таймер
+        interval = int(1000 / self.fps)  # миллисекунды
+        self.timer.start(interval)
+        
+        self.playback_started.emit()
+        self.playback_state_changed.emit("playing")
+        logger.debug("Playback started")
+    
+    def pause_playback(self):
+        """Пауза воспроизведения"""
+        self.is_playing = False
+        self.play_btn.setText("▶ Play")
+        self.timer.stop()
+        
+        self.playback_paused.emit()
+        self.playback_state_changed.emit("paused")
+        logger.debug("Playback paused")
+    
+    def stop_playback(self):
+        """Остановка воспроизведения"""
+        self.is_playing = False
+        self.play_btn.setText("▶ Play")
+        self.timer.stop()
+        
+        # Возврат к началу
+        self.current_tick = int(self.positions_data['tick'].min()) if self.positions_data is not None else 0
+        self.time_slider.setValue(self.current_tick)
+        self.render_frame()
+        
+        self.playback_stopped.emit()
+        self.playback_state_changed.emit("stopped")
+        logger.debug("Playback stopped")
+    
+    def update_frame(self):
+        """Обновление кадра (вызывается таймером)"""
+        if not self.is_playing or self.positions_data is None:
+            return
+        
+        # Вычисляем следующий тик
+        ticks_per_frame = (self.tick_rate / self.fps) * self.playback_speed
+        self.current_tick += int(ticks_per_frame)
+        
+        # Проверяем границы
+        if self.current_tick >= self.max_tick:
+            self.current_tick = self.max_tick
+            self.pause_playback()
+        
+        # Обновляем UI
+        self.time_slider.blockSignals(True)
+        self.time_slider.setValue(self.current_tick)
+        self.time_slider.blockSignals(False)
+        
+        self.render_frame()
+        self.tick_changed.emit(self.current_tick)
+    
+    def render_frame(self):
+        """Отрисовка текущего кадра"""
+        if self.positions_data is None or self.map_renderer is None:
+            return
+        
+        # Очищаем предыдущий кадр (кроме фона карты)
+        for item in self.scene.items():
+            if not isinstance(item, QGraphicsPixmapItem):
+                self.scene.removeItem(item)
+        
+        # Получаем позиции игроков на текущем тике
+        current_data = self.positions_data[
+            self.positions_data['tick'] == self.current_tick
+        ]
+        
+        if current_data.empty:
+            # Интерполяция между тиками
+            current_data = self._interpolate_positions(self.current_tick)
+        
+        # Создаём overlay для рисования
+        overlay = QPixmap(self.map_renderer.get_map_image().size())
+        overlay.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(overlay)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Рисуем убийства (если есть)
+        self._draw_kills(painter)
+        
+        # Рисуем бомбу (если есть)
+        self._draw_bomb(painter)
+        
+        # Рисуем игроков
+        for _, player in current_data.iterrows():
+            x = player.get('X', 0)
+            y = player.get('Y', 0)
+            yaw = player.get('yaw', 0)
+            health = player.get('health', 100)
+            team = player.get('team_name', 'Unknown')
+            name = player.get('name', '')
+            
+            # Цвет команды
+            if 'CT' in team or 'Counter' in team:
+                color = QColor(100, 150, 255)  # Синий
+            elif 'T' in team or 'Terrorist' in team:
+                color = QColor(255, 200, 100)  # Жёлтый/оранжевый
+            else:
+                color = QColor(150, 150, 150)  # Серый
+            
+            # Рисуем игрока
+            self.map_renderer.draw_player(
+                painter, x, y, yaw, color, 
+                health=int(health),
+                name=name,
+                size=14,
+                show_name=True,
+                show_health=False
+            )
+        
+        # Рисуем легенду
+        self._draw_legend(painter, current_data)
+        
+        painter.end()
+        
+        # Добавляем overlay на сцену
+        self.scene.addPixmap(overlay)
+        
+        # Обновляем информацию
+        self.update_info()
+    
+    def _interpolate_positions(self, target_tick: int):
+        """
+        Интерполяция позиций между тиками
+        
+        Args:
+            target_tick: Целевой тик
+            
+        Returns:
+            DataFrame с интерполированными позициями
+        """
+        # Находим ближайшие тики
+        before = self.positions_data[self.positions_data['tick'] <= target_tick]
+        after = self.positions_data[self.positions_data['tick'] > target_tick]
+        
+        if before.empty:
+            return after.head(1)
+        if after.empty:
+            return before.tail(1)
+        
+        tick_before = before['tick'].max()
+        tick_after = after['tick'].min()
+        
+        # Линейная интерполяция
+        alpha = (target_tick - tick_before) / (tick_after - tick_before)
+        
+        data_before = before[before['tick'] == tick_before]
+        data_after = after[after['tick'] == tick_after]
+        
+        # Простая интерполяция (можно улучшить)
+        result = data_before.copy()
+        
+        for col in ['X', 'Y', 'Z', 'yaw']:
+            if col in data_before.columns and col in data_after.columns:
+                result[col] = data_before[col] * (1 - alpha) + data_after[col] * alpha
+        
+        return result
+    
+    def _draw_kills(self, painter: QPainter):
+        """Отрисовка убийств на текущем тике"""
+        if self.kills_data is None:
+            return
+        
+        # Показываем убийства из последних 5 секунд
+        tick_window = self.tick_rate * 5
+        
+        recent_kills = [
+            k for k in self.kills_data
+            if self.current_tick - tick_window <= k.get('tick', 0) <= self.current_tick
+        ]
+        
+        for kill in recent_kills:
+            x = kill.get('victim_X', 0)
+            y = kill.get('victim_Y', 0)
+            weapon = kill.get('weapon', '')
+            headshot = kill.get('headshot', False)
+            
+            self.map_renderer.draw_kill(
+                painter, x, y, weapon, headshot, 
+                show_weapon_icon=True
+            )
+    
+    def _draw_bomb(self, painter: QPainter):
+        """Отрисовка бомбы"""
+        if self.positions_data is None:
+            return
+        
+        # Ищем игрока с бомбой
+        current_data = self.positions_data[
+            self.positions_data['tick'] == self.current_tick
+        ]
+        
+        for _, player in current_data.iterrows():
+            # Проверяем, есть ли у игрока бомба
+            has_bomb = player.get('has_bomb', False)
+            if has_bomb:
+                x = player.get('X', 0)
+                y = player.get('Y', 0)
+                
+                # Пульсация для посаженной бомбы
+                import math
+                pulse = int(127 + 128 * math.sin(self.current_tick / 10))
+                
+                self.map_renderer.draw_bomb(
+                    painter, x, y, 
+                    planted=False,
+                    pulse_alpha=pulse
+                )
+                break
+    
+    def _draw_legend(self, painter: QPainter, current_data):
+        """Отрисовка легенды с информацией"""
+        if current_data.empty:
+            return
+        
+        # Подсчитываем живых игроков
+        ct_alive = len(current_data[
+            (current_data['team_name'].str.contains('CT', case=False)) & 
+            (current_data['health'] > 0)
+        ])
+        
+        t_alive = len(current_data[
+            (current_data['team_name'].str.contains('T', case=False)) & 
+            (current_data['health'] > 0)
+        ])
+        
+        # Получаем текущий раунд
+        current_round = self._get_current_round()
+        round_num = current_round.get('round_num', 0) if current_round else 0
+        max_rounds = len(self.rounds_data) if self.rounds_data else 0
+        
+        # Рисуем легенду в верхнем левом углу
+        self.map_renderer.draw_legend(
+            painter, 10, 10,
+            ct_alive, t_alive,
+            round_num, max_rounds
+        )
+    
+    def on_slider_changed(self, value: int):
+        """Обработчик изменения слайдера"""
+        self.current_tick = value
+        self.render_frame()
     
     def set_speed(self, speed: float):
-        """
-        Установить скорость воспроизведения
-        
-        Args:
-            speed: Множитель (0.5 = половина скорости, 2.0 = двойная)
-        """
+        """Установка скорости воспроизведения"""
         self.playback_speed = speed
-        log.debug(f"Playback speed set to {speed}x")
+        logger.debug(f"Playback speed set to {speed}x")
     
-    def pause(self):
-        """Пауза"""
-        self.is_playing = False
-        self.playback_timer.stop()
-        self.playback_state_changed.emit(False)
-        log.debug("Playback paused")
-    
-    def stop(self):
-        """Остановить и вернуться к началу"""
-        self.pause()
-        self.seek(0)
-        log.debug("Playback stopped")
-    
-    def seek(self, frame_index: int):
-        """
-        Перейти к фрейму
+    def update_info(self):
+        """Обновление информационных меток"""
+        # Время
+        current_time = self.current_tick / self.tick_rate
+        max_time = self.max_tick / self.tick_rate
         
-        Args:
-            frame_index: Индекс фрейма
-        """
-        if 0 <= frame_index < len(self.frames):
-            self.current_frame_index = frame_index
-            self.interpolation_progress = 0.0  # Сбрасываем интерполяцию
-            self._show_frame(frame_index)
-    
-    def _advance_frame(self):
-        """Переход к следующему фрейму (60 FPS с интерполяцией)"""
-        if not self.frames or self.current_frame_index >= len(self.frames) - 1:
-            self.pause()
-            return
+        current_str = f"{int(current_time // 60):02d}:{int(current_time % 60):02d}"
+        max_str = f"{int(max_time // 60):02d}:{int(max_time % 60):02d}"
         
-        # Вычисляем шаг интерполяции
-        # При game_fps=4 и render_fps=60: нужно 60/4 = 15 шагов между frames
-        steps_per_frame = self.render_fps / self.game_fps
-        step_size = 1.0 / steps_per_frame
+        self.time_label.setText(f"{current_str} / {max_str}")
         
-        # Увеличиваем прогресс с учётом скорости
-        self.interpolation_progress += step_size * self.playback_speed
-        
-        # Если прошли весь frame, переходим к следующему
-        if self.interpolation_progress >= 1.0:
-            self.current_frame_index += 1
-            self.interpolation_progress = 0.0
-            
-            if self.current_frame_index >= len(self.frames) - 1:
-                self.pause()
-                return
-        
-        # Создаём интерполированный frame
-        self._create_interpolated_frame()
-        
-        # Обновляем отрисовку
-        self.canvas.update()
-    
-    def _create_interpolated_frame(self):
-        """Создание интерполированного frame между двумя game frames"""
-        if self.current_frame_index >= len(self.frames) - 1:
-            self.interpolated_frame = self.frames[self.current_frame_index]
-            self.canvas.set_frame(self.interpolated_frame)
-            return
-        
-        current = self.frames[self.current_frame_index]
-        next_frame = self.frames[self.current_frame_index + 1]
-        
-        # Создаём новый frame
-        from ..core.models import GameFrame, PlayerFrame, Position
-        
-        interpolated = GameFrame(
-            tick=current.tick,
-            time_seconds=current.time_seconds,
-            round_number=current.round_number,
-        )
-        
-        # Интерполируем позиции каждого игрока
-        for current_pf in current.players:
-            # Находим того же игрока в следующем frame
-            next_pf = None
-            for npf in next_frame.players:
-                if npf.player.steam_id == current_pf.player.steam_id:
-                    next_pf = npf
-                    break
-            
-            if next_pf is None:
-                # Игрок не найден в следующем frame, используем текущую позицию
-                interpolated.players.append(current_pf)
-                continue
-            
-            # Линейная интерполяция позиции
-            t = self.interpolation_progress
-            x = current_pf.position.x + (next_pf.position.x - current_pf.position.x) * t
-            y = current_pf.position.y + (next_pf.position.y - current_pf.position.y) * t
-            z = current_pf.position.z + (next_pf.position.z - current_pf.position.z) * t
-            
-            # Интерполяция угла (с учётом кругового характера)
-            angle_diff = next_pf.view_angle - current_pf.view_angle
-            # Нормализуем разницу углов (-180 до 180)
-            while angle_diff > 180:
-                angle_diff -= 360
-            while angle_diff < -180:
-                angle_diff += 360
-            view_angle = current_pf.view_angle + angle_diff * t
-            
-            # Создаём интерполированный PlayerFrame
-            interpolated_pf = PlayerFrame(
-                tick=current.tick,
-                time_seconds=current.time_seconds,
-                player=current_pf.player,
-                position=Position(x, y, z),
-                view_angle=view_angle,
-                health=current_pf.health,  # Здоровье не интерполируем
-                armor=current_pf.armor,
-                is_alive=current_pf.is_alive,
-                active_weapon=current_pf.active_weapon,
+        # Информация о раунде
+        current_round = self._get_current_round()
+        if current_round:
+            round_num = current_round.get('round_num', 0)
+            self.info_label.setText(
+                f"Round {round_num} | "
+                f"Tick {self.current_tick} / {self.max_tick} | "
+                f"Speed {self.playback_speed}x"
             )
-            
-            interpolated.players.append(interpolated_pf)
-        
-        self.interpolated_frame = interpolated
-        self.canvas.set_frame(self.interpolated_frame)
+        else:
+            self.info_label.setText(
+                f"Tick {self.current_tick} / {self.max_tick} | "
+                f"Speed {self.playback_speed}x"
+            )
     
-    def get_progress(self) -> float:
-        """
-        Получить прогресс воспроизведения
-        
-        Returns:
-            Прогресс от 0.0 до 1.0
-        """
-        if not self.frames:
-            return 0.0
-        return self.current_frame_index / (len(self.frames) - 1)
+    def _get_current_round(self) -> Optional[dict]:
+        """Получить текущий раунд"""
+        for round_data in self.rounds_data:
+            start = round_data.get('start_tick', 0)
+            end = round_data.get('end_tick', 0)
+            if start <= self.current_tick <= end:
+                return round_data
+        return None
     
-    def set_progress(self, progress: float):
-        """
-        Установить прогресс воспроизведения
-        
-        Args:
-            progress: Значение от 0.0 до 1.0
-        """
-        if not self.frames:
-            return
-        
-        frame_index = int(progress * (len(self.frames) - 1))
-        self.seek(frame_index)
-    
-    def _update_ui(self):
-        """Периодическое обновление UI"""
-        if self.is_playing and self.frames:
-            # Можно добавить дополнительные обновления здесь
-            pass
+    def resizeEvent(self, event):
+        """Обработка изменения размера"""
+        super().resizeEvent(event)
+        if self.scene:
+            self.view.fitInView(
+                self.scene.sceneRect(), 
+                Qt.AspectRatioMode.KeepAspectRatio
+            )

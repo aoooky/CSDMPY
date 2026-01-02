@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 from pathlib import Path
+from loguru import logger
+import asyncio
 
 from ..utils.config import config
 from ..utils.logger import log
@@ -368,90 +370,15 @@ class MainWindow(QMainWindow):
         """Обработка прогресса парсинга"""
         self.status_bar.showMessage(f"{message} ({percentage}%)")
     
-    def _on_parse_finished(self, match: Match, frames: list):
-        """Обработка завершения парсинга"""
-        self.current_match = match
+    def _on_parse_finished(self, demo_path, frames=None):
+        """Обработчик завершения парсинга"""
+        from pathlib import Path
+        logger.info(f"Parse finished: {demo_path}")
         
-        # Загружаем статистику
-        self.stats_panel.load_match(match)
+        # Показываем уведомление
+        demo_name = Path(demo_path).name
+        logger.info(f"✅ Successfully parsed: {demo_name}")
         
-        # Загружаем визуализацию если есть фреймы
-        if frames:
-            log.info(f"Loading {len(frames)} frames to viewer")
-            self.demo_viewer.load_match(match, frames)
-            self.playback_controls.enable_controls(True)
-        else:
-            log.warning("No position frames parsed")
-            self.playback_controls.enable_controls(False)
-        
-        # Сохраняем в БД асинхронно
-        self.status_bar.showMessage("Saving to database...", 0)
-        log.info("Saving match to database...")
-        
-        import asyncio
-        from ..database.repository import MatchRepository
-        
-        async def save_to_db():
-            try:
-                # Проверяем существует ли уже
-                from ..database.database import db
-                exists = await MatchRepository.exists(match.demo_path)
-                
-                if exists:
-                    log.info("Match already exists in database")
-                    return None
-                
-                # Сохраняем
-                match_model = await MatchRepository.create_from_match(match)
-                log.info(f"Match saved to database with ID: {match_model.id}")
-                return match_model
-            except Exception as e:
-                log.error(f"Failed to save match to database: {e}")
-                return None
-        
-        # Запускаем сохранение
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        match_model = loop.run_until_complete(save_to_db())
-        
-        # Формируем сообщение
-        summary = (
-            f"✅ Parse completed!\n\n"
-            f"Map: {match.map_name}\n"
-            f"Type: {match.demo_type}\n"
-            f"Rounds: {match.total_rounds}\n"
-            f"Score: {match.t_score}:{match.ct_score}\n"
-            f"Players: {len(match.players)}\n"
-            f"Total Kills: {match.total_kills}\n"
-        )
-        
-        if frames:
-            summary += f"Frames: {len(frames)}\n"
-        
-        summary += "\n"
-        
-        if match_model:
-            summary += f"💾 Saved to database (ID: {match_model.id})\n\n"
-        else:
-            summary += "⚠️ Already in database or save failed\n\n"
-        
-        if frames:
-            summary += "🎬 Ready for playback! Go to Viewer tab."
-        else:
-            summary += "⚠️ Positions not parsed. Statistics only."
-        
-        QMessageBox.information(self, "Parse Completed", summary)
-        
-        status_msg = "Ready - Match loaded"
-        if frames:
-            status_msg += f" ({len(frames)} frames)"
-        self.status_bar.showMessage(status_msg, 5000)
-        
-        # Включаем кнопку обратно
-        self.parse_btn.setEnabled(True)
-        self.parse_btn.setText("🔍 Parse Selected Demo")
-        
-        log.info(f"Parse completed: {match.map_name}")
     
     def _on_parse_error(self, error: str, demo_path: str):
         """Обработка ошибки парсинга"""

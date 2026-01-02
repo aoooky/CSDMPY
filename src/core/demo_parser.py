@@ -1,404 +1,332 @@
 """
-Парсер CS:GO/CS2 демо файлов
-Использует demoparser2 для извлечения данных
+Demo Parser - ФИНАЛЬНАЯ версия с правильным API demoparser2
 """
-import asyncio
-from pathlib import Path
-from typing import Optional
 
-from demoparser2 import DemoParser
+from pathlib import Path
+from typing import Dict, List, Optional
+import pandas as pd
+from loguru import logger
 
 from .models import (
-    Match, Round, Player, Kill, Damage, Position,
-    Team, RoundEndReason, PlayerFrame, GameFrame
+    Player,
+    Round,
+    Kill,
+    MatchInfo
 )
-from ..utils.logger import log, log_async_execution_time
-from ..utils.config import config
 
 
-class DemoParserWrapper:
-    """Обёртка над demoparser2 для удобной работы"""
-    
-    def __init__(self, demo_path: str):
-        self.demo_path = Path(demo_path)
-        self.parser: Optional[DemoParser] = None
-        self.match: Optional[Match] = None
-        
-        if not self.demo_path.exists():
-            raise FileNotFoundError(f"Demo file not found: {demo_path}")
-        
-        log.info(f"Initialized parser for: {self.demo_path.name}")
-    
-    @log_async_execution_time
-    async def parse(self) -> Match:
-        """
-        Парсинг демо файла
-        Извлекает всю информацию о матче
-        """
-        log.info(f"Starting parse: {self.demo_path.name}")
-        
-        try:
-            # Создаём парсер
-            self.parser = DemoParser(str(self.demo_path))
-            
-            # Получаем базовую информацию
-            header = await self._parse_header()
-            
-            # Создаём объект матча
-            self.match = Match(
-                demo_path=str(self.demo_path),
-                map_name=header["map_name"],
-                demo_type=header["demo_type"],
-                server_name=header.get("server_name"),
-                tick_rate=header.get("tick_rate", 64),
-            )
-            
-            # Парсим события и данные
-            await self._parse_players()
-            await self._parse_rounds()
-            
-            log.info(
-                f"Parse completed: {self.match.map_name}, "
-                f"{self.match.total_rounds} rounds, "
-                f"{len(self.match.players)} players"
-            )
-            
-            return self.match
-            
-        except Exception as e:
-            log.exception(f"Failed to parse demo: {e}")
-            raise
-    
-    async def _parse_header(self) -> dict:
-        """Извлечение информации из заголовка"""
-        try:
-            # Парсим заголовок
-            header = self.parser.parse_header()
-            
-            return {
-                "map_name": header.get("map_name", "unknown"),
-                "demo_type": "CS2" if "cs2" in str(self.demo_path).lower() else "CS:GO",
-                "server_name": header.get("server_name"),
-                "tick_rate": header.get("tick_rate", 64),
-            }
-        except Exception as e:
-            log.warning(f"Failed to parse header, using defaults: {e}")
-            return {
-                "map_name": "unknown",
-                "demo_type": "CS:GO",
-                "server_name": None,
-                "tick_rate": 64,
-            }
-    
-    async def _parse_players(self):
-        """Извлечение информации об игроках"""
-        log.debug("Parsing players...")
-        
-        # Используем demoparser2 для получения списка игроков
-        # Парсим события для определения игроков
-        df = self.parser.parse_event("player_death")
-        
-        if df is None or df.empty:
-            log.warning("No player_death events found")
-            return
-        
-        # Извлекаем уникальных игроков
-        unique_players = {}
-        
-        # Из колонок attacker и victim
-        for col in ["attacker_steamid", "attacker_name", "attacker_team_name"]:
-            if col in df.columns:
-                for idx, row in df.iterrows():
-                    steam_id = str(row.get("attacker_steamid", ""))
-                    if steam_id and steam_id != "0" and steam_id not in unique_players:
-                        unique_players[steam_id] = {
-                            "name": row.get("attacker_name", "Unknown"),
-                            "team": self._parse_team(row.get("attacker_team_name", "")),
-                        }
-        
-        for col in ["user_steamid", "user_name", "user_team_name"]:
-            if col in df.columns:
-                for idx, row in df.iterrows():
-                    steam_id = str(row.get("user_steamid", ""))
-                    if steam_id and steam_id != "0" and steam_id not in unique_players:
-                        unique_players[steam_id] = {
-                            "name": row.get("user_name", "Unknown"),
-                            "team": self._parse_team(row.get("user_team_name", "")),
-                        }
-        
-        # Создаём объекты игроков
-        for steam_id, data in unique_players.items():
-            player = Player(
-                steam_id=steam_id,
-                name=data["name"],
-                team=data["team"],
-            )
-            self.match.players[steam_id] = player
-            
-            # Распределяем по командам
-            if player.team == Team.T:
-                if steam_id not in self.match.t_players:
-                    self.match.t_players.append(steam_id)
-            elif player.team == Team.CT:
-                if steam_id not in self.match.ct_players:
-                    self.match.ct_players.append(steam_id)
-        
-        log.debug(f"Found {len(self.match.players)} players")
-    
-    async def _parse_rounds(self):
-        """Парсинг раундов и событий"""
-        log.debug("Parsing rounds and events...")
-        
-        # Парсим события завершения раундов
-        round_end_df = self.parser.parse_event("round_end")
-        
-        if round_end_df is None or round_end_df.empty:
-            log.warning("No round_end events found")
-            return
-        
-        # Парсим убийства
-        kills_df = self.parser.parse_event("player_death")
-        
-        # Обрабатываем каждый раунд
-        for round_num, row in enumerate(round_end_df.itertuples(), start=1):
-            round_obj = await self._parse_round(round_num, row, kills_df)
-            if round_obj:
-                self.match.rounds.append(round_obj)
-        
-        # Обновляем счёт
-        self._update_match_score()
-        
-        log.debug(f"Parsed {len(self.match.rounds)} rounds")
-    
-    async def _parse_round(self, round_num: int, round_data, kills_df) -> Optional[Round]:
-        """Парсинг одного раунда"""
-        try:
-            # Определяем победителя
-            winner_team = self._parse_team(getattr(round_data, "winner", ""))
-            
-            # Создаём раунд
-            round_obj = Round(
-                number=round_num,
-                start_tick=getattr(round_data, "tick", 0) - 5000,  # Примерно
-                end_tick=getattr(round_data, "tick", 0),
-                winner=winner_team,
-                end_reason=self._parse_round_end_reason(getattr(round_data, "reason", 0)),
-                duration_seconds=0.0,  # Вычислим позже
-            )
-            
-            # Парсим убийства для этого раунда
-            if kills_df is not None and not kills_df.empty:
-                round_kills = await self._parse_kills_for_round(round_obj, kills_df)
-                round_obj.kills = round_kills
-            
-            return round_obj
-            
-        except Exception as e:
-            log.error(f"Failed to parse round {round_num}: {e}")
-            return None
-    
-    async def _parse_kills_for_round(self, round_obj: Round, kills_df) -> list[Kill]:
-        """Извлечение убийств для раунда"""
-        kills = []
-        
-        for idx, row in kills_df.iterrows():
-            try:
-                tick = row.get("tick", 0)
-                
-                # Проверяем что убийство в этом раунде
-                if not (round_obj.start_tick <= tick <= round_obj.end_tick):
-                    continue
-                
-                # Получаем игроков
-                attacker_id = str(row.get("attacker_steamid", ""))
-                victim_id = str(row.get("user_steamid", ""))
-                
-                attacker = self.match.players.get(attacker_id)
-                victim = self.match.players.get(victim_id)
-                
-                if not attacker or not victim:
-                    continue
-                
-                # Создаём событие убийства
-                kill = Kill(
-                    tick=tick,
-                    time_seconds=tick / self.match.tick_rate,
-                    killer=attacker,
-                    victim=victim,
-                    weapon=row.get("weapon", "unknown"),
-                    is_headshot=row.get("headshot", False),
-                    is_wallbang=row.get("penetrated", False),
-                )
-                
-                kills.append(kill)
-                
-                # Обновляем статистику игроков
-                attacker.kills += 1
-                if kill.is_headshot:
-                    attacker.headshots += 1
-                victim.deaths += 1
-                
-            except Exception as e:
-                log.warning(f"Failed to parse kill: {e}")
-                continue
-        
-        return kills
-    
-    def _parse_team(self, team_name: str) -> Team:
-        """Парсинг названия команды"""
-        team_name = str(team_name).upper()
-        
-        if "TERRORIST" in team_name or team_name == "T":
-            return Team.T
-        elif "CT" in team_name or "COUNTER" in team_name:
-            return Team.CT
-        elif "SPEC" in team_name:
-            return Team.SPECTATOR
-        else:
-            return Team.UNASSIGNED
-    
-    def _parse_round_end_reason(self, reason: int) -> RoundEndReason:
-        """Парсинг причины окончания раунда"""
-        # Маппинг причин (могут отличаться в CS:GO и CS2)
-        reason_map = {
-            1: RoundEndReason.TARGET_BOMBED,
-            7: RoundEndReason.BOMB_DEFUSED,
-            8: RoundEndReason.CT_ELIMINATED,
-            9: RoundEndReason.T_ELIMINATED,
-            12: RoundEndReason.TIME_EXPIRED,
-        }
-        
-        return reason_map.get(reason, RoundEndReason.TIME_EXPIRED)
-    
-    def _update_match_score(self):
-        """Обновление счёта матча"""
-        for round_obj in self.match.rounds:
-            if round_obj.winner == Team.T:
-                self.match.t_score += 1
-            elif round_obj.winner == Team.CT:
-                self.match.ct_score += 1
-    
-    @log_async_execution_time
-    async def parse_positions(self, tick_interval: int = 16) -> list[GameFrame]:
-        """
-        Парсинг позиций игроков (для визуализации)
-        tick_interval: интервал между снимками (16 = ~4 frames/sec при 64 tick)
-        """
-        log.info(f"Parsing player positions (interval: {tick_interval} ticks)...")
-        
-        try:
-            # Определяем диапазон тиков для парсинга
-            if not self.match.rounds:
-                log.warning("No rounds found, cannot parse positions")
-                return []
-            
-            # Находим min и max тики из раундов
-            min_tick = min(r.start_tick for r in self.match.rounds)
-            max_tick = max(r.end_tick for r in self.match.rounds)
-            
-            # Создаём список тиков для парсинга (только внутри раундов)
-            ticks_to_parse = []
-            for tick in range(min_tick, max_tick, tick_interval):
-                # Проверяем что тик внутри какого-то раунда
-                for round_obj in self.match.rounds:
-                    if round_obj.start_tick <= tick <= round_obj.end_tick:
-                        ticks_to_parse.append(tick)
-                        break
-            
-            log.debug(f"Parsing {len(ticks_to_parse)} ticks from {min_tick} to {max_tick}")
-            
-            # Парсим тики с позициями
-            df = self.parser.parse_ticks(
-                ["X", "Y", "Z", "yaw", "health", "armor", "is_alive", "team_name", "active_weapon_name"],
-                ticks=ticks_to_parse
-            )
-            
-            if df is None or df.empty:
-                log.warning("No position data found")
-                return []
-            
-            frames = []
-            
-            # Группируем по тикам
-            grouped = df.groupby('tick')
-            
-            for tick, tick_data in grouped:
-                # Определяем раунд для этого тика
-                round_number = self._get_round_for_tick(tick)
-                
-                if round_number == 0:
-                    continue
-                
-                game_frame = GameFrame(
-                    tick=tick,
-                    time_seconds=tick / self.match.tick_rate,
-                    round_number=round_number,
-                )
-                
-                # Добавляем позиции игроков
-                for idx, row in tick_data.iterrows():
-                    steam_id = str(row.get("steamid", ""))
-                    player = self.match.players.get(steam_id)
-                    
-                    if not player:
-                        continue
-                    
-                    # Проверяем наличие координат
-                    x = row.get("X")
-                    y = row.get("Y")
-                    z = row.get("Z")
-                    
-                    if x is None or y is None or z is None:
-                        continue
-                    
-                    position = Position(
-                        x=float(x),
-                        y=float(y),
-                        z=float(z),
-                    )
-                    
-                    player_frame = PlayerFrame(
-                        tick=tick,
-                        time_seconds=tick / self.match.tick_rate,
-                        player=player,
-                        position=position,
-                        view_angle=float(row.get("yaw", 0)),
-                        health=int(row.get("health", 100)),
-                        armor=int(row.get("armor", 0)),
-                        is_alive=bool(row.get("is_alive", True)),
-                        active_weapon=row.get("active_weapon_name"),
-                    )
-                    
-                    game_frame.players.append(player_frame)
-                
-                if game_frame.players:
-                    frames.append(game_frame)
-            
-            log.info(f"Parsed {len(frames)} position frames")
-            return frames
-            
-        except Exception as e:
-            log.exception(f"Failed to parse positions: {e}")
-            return []
-    
-    def _get_round_for_tick(self, tick: int) -> int:
-        """Определение номера раунда по тику"""
-        for round_obj in self.match.rounds:
-            if round_obj.start_tick <= tick <= round_obj.end_tick:
-                return round_obj.number
-        return 0
-
-
-# Удобная функция для быстрого парсинга
-async def parse_demo(demo_path: str) -> Match:
+def parse_demo(demo_path: str) -> Dict:
     """
-    Быстрый парсинг демо файла
+    Парсинг демо-файла
     
     Args:
         demo_path: Путь к .dem файлу
-    
+        
     Returns:
-        Match объект с данными о матче
+        Словарь с данными демки
     """
-    parser = DemoParserWrapper(demo_path)
-    return await parser.parse()
+    from demoparser2 import DemoParser
+    
+    logger.info(f"Parsing demo: {demo_path}")
+    
+    try:
+        # Инициализация парсера
+        parser = DemoParser(demo_path)
+        
+        # Получаем базовую информацию
+        header = parser.parse_header()
+        logger.debug(f"Header parsed: {header.get('map_name', 'unknown')}")
+        
+        # Парсим события (demoparser2 требует указать какие)
+        logger.debug("Parsing events...")
+        player_death = parser.parse_event("player_death")
+        round_end = parser.parse_event("round_end")
+        round_start = parser.parse_event("round_start")
+        
+        # Собираем все события
+        events = {
+            "player_death": player_death,
+            "round_end": round_end,
+            "round_start": round_start
+        }
+        
+        logger.debug(f"Events parsed: {len(player_death)} kills, {len(round_end)} rounds")
+        
+        # Парсим позиции игроков (для 2D визуализации)
+        logger.debug("Parsing player positions...")
+        positions_df = parser.parse_ticks([
+            "X", "Y", "Z", "yaw", "pitch",
+            "health", "armor", "team_name", "name", "steamid"
+        ])
+        
+        logger.debug(f"Positions parsed: {len(positions_df)} ticks")
+        
+        # Извлекаем информацию о матче
+        match_info = _extract_match_info(header, events)
+        
+        # Извлекаем игроков
+        players = _extract_players(events)
+        
+        # Извлекаем раунды
+        rounds = _extract_rounds(events)
+        
+        # Извлекаем убийства
+        kills = _extract_kills(events)
+        
+        logger.info(f"Parsing completed: {len(players)} players, {len(rounds)} rounds, {len(kills)} kills")
+        
+        return {
+            "info": match_info,
+            "players": players,
+            "rounds": rounds,
+            "kills": kills,
+            "positions": positions_df,
+            "map_name": header.get("map_name", "unknown")
+        }
+        
+    except Exception as e:
+        logger.error(f"Error parsing demo: {e}")
+        raise
+
+
+def _extract_match_info(header: Dict, events: Dict) -> MatchInfo:
+    """Извлечение информации о матче"""
+    return MatchInfo(
+        map_name=header.get("map_name", "unknown"),
+        duration=0,  # Будет вычислено позже
+        date=header.get("date", ""),
+        server_name=header.get("server_name", ""),
+        tick_rate=header.get("tickrate", 64)
+    )
+
+
+def _extract_players(events: Dict) -> List[Player]:
+    """Извлечение информации об игроках"""
+    # Получаем уникальных игроков из событий
+    player_map = {}
+    
+    # Из событий убийств (теперь это DataFrame)
+    if "player_death" in events:
+        deaths_df = events["player_death"]
+        
+        # Итерируемся по DataFrame
+        for _, event in deaths_df.iterrows():
+            # Убийца
+            attacker_steamid = event.get("attacker_steamid")
+            if attacker_steamid and attacker_steamid not in player_map:
+                player_map[attacker_steamid] = Player(
+                    steamid=str(attacker_steamid),
+                    name=str(event.get("attacker_name", "Unknown")),
+                    team=str(event.get("attacker_team_name", "Unknown")),
+                    kills=0,
+                    deaths=0,
+                    assists=0,
+                    damage=0,
+                    headshots=0
+                )
+            
+            # Жертва
+            victim_steamid = event.get("user_steamid")
+            if victim_steamid and victim_steamid not in player_map:
+                player_map[victim_steamid] = Player(
+                    steamid=str(victim_steamid),
+                    name=str(event.get("user_name", "Unknown")),
+                    team=str(event.get("user_team_name", "Unknown")),
+                    kills=0,
+                    deaths=0,
+                    assists=0,
+                    damage=0,
+                    headshots=0
+                )
+    
+    # Подсчитываем статистику
+    if "player_death" in events:
+        deaths_df = events["player_death"]
+        for _, event in deaths_df.iterrows():
+            # Убийства
+            attacker_steamid = event.get("attacker_steamid")
+            if attacker_steamid in player_map:
+                player_map[attacker_steamid].kills += 1
+                if event.get("headshot", False):
+                    player_map[attacker_steamid].headshots += 1
+            
+            # Смерти
+            victim_steamid = event.get("user_steamid")
+            if victim_steamid in player_map:
+                player_map[victim_steamid].deaths += 1
+    
+    logger.debug(f"Extracted {len(player_map)} players")
+    return list(player_map.values())
+
+
+def _extract_rounds(events: Dict) -> List[Round]:
+    """Извлечение информации о раундах"""
+    rounds = []
+    
+    if "round_end" in events:
+        rounds_df = events["round_end"]
+        for idx, event in enumerate(rounds_df.iterrows(), 1):
+            _, row = event  # iterrows возвращает (index, row)
+            rounds.append(Round(
+                round_num=idx,
+                winner=str(row.get("winner", "Unknown")),
+                reason=str(row.get("reason", "")),
+                duration=0,  # Будет вычислено
+                start_tick=0,
+                end_tick=int(row.get("tick", 0))
+            ))
+    
+    logger.debug(f"Extracted {len(rounds)} rounds")
+    return rounds
+
+
+def _extract_kills(events: Dict) -> List[Kill]:
+    """Извлечение информации об убийствах"""
+    kills = []
+    
+    if "player_death" in events:
+        deaths_df = events["player_death"]
+        for _, event in deaths_df.iterrows():
+            kills.append(Kill(
+                tick=int(event.get("tick", 0)),
+                attacker_steamid=str(event.get("attacker_steamid", "")),
+                attacker_name=str(event.get("attacker_name", "Unknown")),
+                victim_steamid=str(event.get("user_steamid", "")),
+                victim_name=str(event.get("user_name", "Unknown")),
+                weapon=str(event.get("weapon", "")),
+                headshot=bool(event.get("headshot", False)),
+                victim_X=float(event.get("user_X", 0)),
+                victim_Y=float(event.get("user_Y", 0)),
+                victim_Z=float(event.get("user_Z", 0))
+            ))
+    
+    logger.debug(f"Extracted {len(kills)} kills")
+    return kills
+
+
+def parse_demo_async(demo_path: str, callback=None):
+    """
+    Асинхронный парсинг демо-файла
+    
+    Args:
+        demo_path: Путь к .dem файлу
+        callback: Функция для вызова после завершения парсинга
+    """
+    import threading
+    
+    def _parse():
+        try:
+            result = parse_demo(demo_path)
+            if callback:
+                callback(result)
+        except Exception as e:
+            logger.error(f"Async parsing error: {e}")
+            if callback:
+                callback(None)
+    
+    thread = threading.Thread(target=_parse, daemon=True)
+    thread.start()
+    
+    return thread
+
+
+class DemoParserWrapper:
+    """
+    Обёртка для парсера с поддержкой прогресса и отмены
+    """
+    
+    def __init__(self, demo_path: str):
+        """
+        Инициализация обёртки
+        
+        Args:
+            demo_path: Путь к .dem файлу
+        """
+        self.demo_path = demo_path
+        self.is_cancelled = False
+        self.progress = 0.0
+        self.status = "idle"
+        
+        logger.debug(f"DemoParserWrapper initialized for {demo_path}")
+    
+    async def parse(self, progress_callback=None):
+        """
+        Асинхронный парсинг с поддержкой прогресса
+        
+        Args:
+            progress_callback: Функция для обновления прогресса (progress, status)
+            
+        Returns:
+            Результат парсинга или None если отменено
+        """
+        import asyncio
+        
+        try:
+            self.status = "parsing"
+            self.progress = 0.0
+            
+            if progress_callback:
+                progress_callback(0.0, "Starting parser...")
+            
+            logger.info(f"Starting parse: {self.demo_path}")
+            
+            # Запускаем парсинг в отдельном потоке
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,  # default executor
+                self._parse_sync
+            )
+            
+            if self.is_cancelled:
+                self.status = "cancelled"
+                logger.info("Parse cancelled")
+                return None
+            
+            self.status = "completed"
+            self.progress = 1.0
+            
+            if progress_callback:
+                progress_callback(1.0, "Completed")
+            
+            logger.info(f"Parse completed: {self.demo_path}")
+            
+            return result
+            
+        except Exception as e:
+            self.status = "error"
+            logger.error(f"Parse error: {e}")
+            raise
+    
+    def _parse_sync(self):
+        """Синхронный парсинг (выполняется в отдельном потоке)"""
+        try:
+            # Обновляем прогресс
+            self.progress = 0.1
+            self.status = "Loading demo file..."
+            
+            result = parse_demo(self.demo_path)
+            
+            # Обновляем прогресс
+            self.progress = 0.9
+            self.status = "Processing data..."
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Sync parse error: {e}")
+            raise
+    
+    def cancel(self):
+        """Отмена парсинга"""
+        self.is_cancelled = True
+        self.status = "cancelled"
+        logger.info(f"Parse cancelled: {self.demo_path}")
+    
+    def get_progress(self) -> tuple[float, str]:
+        """
+        Получить текущий прогресс
+        
+        Returns:
+            Tuple (progress, status)
+        """
+        return self.progress, self.status
