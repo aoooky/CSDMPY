@@ -31,3 +31,8 @@ pytest>=8.3.0
 pytest-asyncio>=0.24.0
 black>=24.0.0
 ruff>=0.6.0
+
+# requirements.txt - добавить:
+Pillow>=10.0.0           # Работа с изображениями
+requests>=2.31.0         # Скачивание ресурсов
+aiohttp>=3.9.0          # Асинхронное скачивание
