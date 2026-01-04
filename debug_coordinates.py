@@ -25,39 +25,29 @@ async def analyze_coordinates(demo_path: str):
     print("⏳ Parsing...")
     
     parser = DemoParserWrapper(demo_path)
-    match = await parser.parse()
+    result = await parser.parse()  # ← Возвращает dict!
     
-    print(f"✅ Map: {match.map_name}")
-    print(f"✅ Players: {len(match.players)}")
+    # Извлекаем данные из dict
+    map_name = result.get('map_name', 'unknown')
+    positions = result.get('positions')  # DataFrame
+    players = result.get('players', [])
+    
+    print(f"✅ Map: {map_name}")
+    print(f"✅ Players: {len(players)}")
+    print(f"✅ Position rows: {len(positions)}")
     print()
     
-    # Парсим позиции
-    print("⏳ Parsing positions...")
-    frames = await parser.parse_positions(tick_interval=128)
-    print(f"✅ Frames: {len(frames)}")
-    print()
-    
-    if not frames:
-        print("❌ No frames found!")
+    if positions is None or positions.empty:
+        print("❌ No positions found!")
         return
     
-    # Находим min/max координаты
-    min_x = float('inf')
-    max_x = float('-inf')
-    min_y = float('inf')
-    max_y = float('-inf')
-    min_z = float('inf')
-    max_z = float('-inf')
-    
-    for frame in frames:
-        for player_frame in frame.players:
-            pos = player_frame.position
-            min_x = min(min_x, pos.x)
-            max_x = max(max_x, pos.x)
-            min_y = min(min_y, pos.y)
-            max_y = max(max_y, pos.y)
-            min_z = min(min_z, pos.z)
-            max_z = max(max_z, pos.z)
+    # Находим min/max координаты из DataFrame
+    min_x = positions['X'].min()
+    max_x = positions['X'].max()
+    min_y = positions['Y'].min()
+    max_y = positions['Y'].max()
+    min_z = positions['Z'].min()
+    max_z = positions['Z'].max()
     
     # Выводим результаты
     print("=" * 70)
@@ -69,25 +59,49 @@ async def analyze_coordinates(demo_path: str):
     print(f"Z axis: {min_z:.1f} to {max_z:.1f}  (vertical: {max_z - min_z:.1f})")
     print()
     
+    # Рекомендуемые границы (с запасом 10%)
+    margin = 0.1
+    x_range = max_x - min_x
+    y_range = max_y - min_y
+    
+    suggested_min_x = min_x - x_range * margin
+    suggested_max_x = max_x + x_range * margin
+    suggested_min_y = min_y - y_range * margin
+    suggested_max_y = max_y + y_range * margin
+    
     # Код для вставки
     print("=" * 70)
-    print("CODE TO USE IN map_renderer.py")
+    print("SUGGESTED CODE FOR map_config.py")
     print("=" * 70)
     print()
-    print(f'"{match.map_name}": MapBounds({min_x:.0f}, {max_x:.0f}, {min_y:.0f}, {max_y:.0f}),')
+    print(f'    "{map_name}": MapBounds(')
+    print(f'        pos_x={suggested_min_x:.0f},')
+    print(f'        pos_y={suggested_max_y:.0f},')
+    print(f'        scale=4.9,')
+    print(f'        min_x={suggested_min_x:.0f},')
+    print(f'        max_x={suggested_max_x:.0f},')
+    print(f'        min_y={suggested_min_y:.0f},')
+    print(f'        max_y={suggested_max_y:.0f}')
+    print(f'    ),')
     print()
     
-    # Примеры позиций
+    # Примеры позиций (первые 10 строк)
     print("=" * 70)
-    print("SAMPLE POSITIONS (first 10 players from first frame)")
+    print("SAMPLE POSITIONS (first 10 rows)")
     print("=" * 70)
     print()
     
-    if frames and frames[0].players:
-        print(f"{'Player':<20} {'X':>10} {'Y':>10} {'Z':>10}")
-        print("-" * 70)
-        for pf in frames[0].players[:10]:
-            print(f"{pf.player.name:<20} {pf.position.x:>10.1f} {pf.position.y:>10.1f} {pf.position.z:>10.1f}")
+    sample = positions.head(10)
+    print(f"{'Name':<15} {'X':>10} {'Y':>10} {'Z':>10} {'Team':<15}")
+    print("-" * 70)
+    
+    for _, row in sample.iterrows():
+        name = str(row.get('name', 'Unknown'))[:14]
+        x = row.get('X', 0)
+        y = row.get('Y', 0)
+        z = row.get('Z', 0)
+        team = str(row.get('team_name', 'Unknown'))[:14]
+        print(f"{name:<15} {x:>10.1f} {y:>10.1f} {z:>10.1f} {team:<15}")
     
     print()
     print("=" * 70)
@@ -99,7 +113,7 @@ def main():
         print("Usage: python debug_coordinates.py <path_to_demo.dem>")
         print()
         print("Example:")
-        print("  python debug_coordinates.py demos/match.dem")
+        print("  python debug_coordinates.py demos/test2.dem")
         sys.exit(1)
     
     demo_path = sys.argv[1]
