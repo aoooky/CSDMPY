@@ -1,6 +1,4 @@
-"""
-Главное окно приложения
-"""
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QSplitter,
@@ -514,4 +512,5 @@ class MainWindow(QMainWindow):
     def _toggle_debug_mode(self, checked: bool):
         """Переключить debug режим"""
         self.demo_viewer.canvas.toggle_debug()
+
         log.debug(f"Debug mode: {checked}")
