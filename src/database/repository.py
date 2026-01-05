@@ -1,7 +1,4 @@
-"""
-Репозиторий для работы с данными
-CRUD операции для матчей, игроков и т.д.
-"""
+
 from typing import Optional, Sequence
 from pathlib import Path
 
@@ -392,4 +389,5 @@ class StatsRepository:
                 "total_matches": row.total_matches or 0,
                 "total_kills": row.total_kills or 0,
                 "total_rounds": row.total_rounds or 0,
+
             }
