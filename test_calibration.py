@@ -1,11 +1,3 @@
-"""
-Тестовый скрипт для проверки точности калибровки карт CS2.
-
-Использование:
-    python test_calibration.py
-    python test_calibration.py --map de_dust2
-    python test_calibration.py --all
-"""
 
 import argparse
 from typing import Dict, Tuple, List
