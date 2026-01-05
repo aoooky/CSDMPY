@@ -1,9 +1,3 @@
-"""
-Простая проверка данных демки через demoparser2
-
-ФАЙЛ: check_demo_simple.py (создать в корне проекта)
-ИСПОЛЬЗОВАНИЕ: python check_demo_simple.py путь/к/демке.dem
-"""
 
 import sys
 from pathlib import Path
