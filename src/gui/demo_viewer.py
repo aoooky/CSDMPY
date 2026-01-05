@@ -1,6 +1,4 @@
-"""
-Обновлённый Demo Viewer с правильной калибровкой координат
-"""
+
 
 from typing import Optional, Dict, List
 from datetime import datetime
@@ -492,4 +490,5 @@ class DemoViewer(QWidget):
             self.view.fitInView(
                 self.scene.sceneRect(), 
                 Qt.AspectRatioMode.KeepAspectRatio
+
             )
