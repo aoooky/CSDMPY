@@ -1,8 +1,4 @@
-#!/usr/bin/env python
-"""
-Скрипт для определения правильных границ карты
-Запуск: python debug_coordinates.py demos/your_demo.dem
-"""
+
 import sys
 import asyncio
 from pathlib import Path
