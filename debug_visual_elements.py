@@ -1,9 +1,3 @@
-"""
-Скрипт для проверки данных об убийствах и бомбе в демке
-
-ФАЙЛ: debug_visual_elements.py (создать в корне проекта)
-ИСПОЛЬЗОВАНИЕ: python debug_visual_elements.py путь/к/демке.dem
-"""
 
 import sys
 from pathlib import Path
