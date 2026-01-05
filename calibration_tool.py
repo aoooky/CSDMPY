@@ -1,15 +1,3 @@
-"""
-Инструмент для калибровки карт
-
-Этот скрипт поможет проверить, правильно ли отображаются игроки на картах.
-Если нет - поможет откалибровать координаты.
-
-Использование:
-    python calibration_tool.py --demo path/to/demo.dem --map de_dust2
-
-Или просто:
-    python calibration_tool.py --test
-"""
 
 import sys
 import argparse
