@@ -1,6 +1,3 @@
-"""
-Обновлённый MapRenderer с иконками оружия и событиями
-"""
 
 import os
 from pathlib import Path
@@ -471,4 +468,5 @@ class MapRenderer:
                 "min_y": self.map_bounds.min_y,
                 "max_y": self.map_bounds.max_y,
             }
+
         }
