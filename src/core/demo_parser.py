@@ -1,6 +1,3 @@
-"""
-Demo Parser - ФИНАЛЬНАЯ версия с правильным API demoparser2
-"""
 
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -329,4 +326,5 @@ class DemoParserWrapper:
         Returns:
             Tuple (progress, status)
         """
+
         return self.progress, self.status
