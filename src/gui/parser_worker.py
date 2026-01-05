@@ -1,6 +1,3 @@
-"""
-Parser Worker - Исправленная версия с сигналами для ParserManager
-"""
 
 import asyncio
 from pathlib import Path
@@ -256,4 +253,5 @@ class ParserManager(QObject):
             # Проверяем, есть ли хоть один активный воркер
             return len(self.workers) > 0
         
+
         return demo_path in self.workers
