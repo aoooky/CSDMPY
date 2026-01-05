@@ -1,7 +1,3 @@
-"""
-Модели данных для CS Demo Manager
-ФИНАЛЬНАЯ версия - содержит ВСЕ необходимые классы
-"""
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
@@ -474,4 +470,5 @@ def create_teams_from_players(players: List[Player]) -> List[Team]:
         teams_dict[team_name].total_deaths += player.deaths
         teams_dict[team_name].total_damage += player.damage
     
+
     return list(teams_dict.values())
